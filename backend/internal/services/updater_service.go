@@ -589,21 +589,6 @@ func (s *UpdaterService) updateContainer(ctx context.Context, cnt container.Summ
 
 	slog.DebugContext(ctx, "updateContainer: starting update", "containerId", cnt.ID, "containerName", name, "newRef", newRef, "isArcane", isArcane)
 
-	// Execute pre-update lifecycle hook (skip for Arcane self-update)
-	if !isArcane {
-		hookResult := arcaneupdater.ExecutePreUpdateCommand(ctx, dcli, cnt.ID, labels)
-		if hookResult.Executed {
-			if hookResult.SkipUpdate {
-				slog.InfoContext(ctx, "updateContainer: container requested skip via pre-update hook", "containerId", cnt.ID, "containerName", name)
-				return fmt.Errorf("container requested skip update via exit code %d", arcaneupdater.ExitCodeSkipUpdate)
-			}
-			if hookResult.Error != nil {
-				slog.WarnContext(ctx, "updateContainer: pre-update hook failed", "containerId", cnt.ID, "err", hookResult.Error)
-				// Continue with update despite hook failure (configurable in future)
-			}
-		}
-	}
-
 	// For Arcane self-update: rename the old container so new one can use the same name
 	originalName := inspect.Name
 	if isArcane {
@@ -697,15 +682,6 @@ func (s *UpdaterService) updateContainer(ctx context.Context, cnt container.Summ
 			if cur, gerr := selfUpdate.GetCurrentArcaneContainer(ctx); gerr == nil && cur != nil {
 				slog.InfoContext(ctx, "updateContainer: current Arcane container after self-update", "containerId", cur.ID, "name", arcaneupdater.ExtractContainerName(*cur))
 			}
-		}
-	}
-
-	// Execute post-update lifecycle hook on the new container
-	if !isArcane {
-		hookResult := arcaneupdater.ExecutePostUpdateCommand(ctx, dcli, resp.ID, labels)
-		if hookResult.Executed && hookResult.Error != nil {
-			slog.WarnContext(ctx, "updateContainer: post-update hook failed", "newContainerId", resp.ID, "err", hookResult.Error)
-			// Log but don't fail the update
 		}
 	}
 
@@ -1070,10 +1046,6 @@ func (s *UpdaterService) restartContainersUsingOldIDs(ctx context.Context, oldID
 		}
 
 		name := cd.Name
-		labels := map[string]string{}
-		if p.inspect.Config != nil && p.inspect.Config.Labels != nil {
-			labels = p.inspect.Config.Labels
-		}
 
 		res := updater.ResourceResult{
 			ResourceID:   p.cnt.ID,
@@ -1082,26 +1054,6 @@ func (s *UpdaterService) restartContainersUsingOldIDs(ctx context.Context, oldID
 			Status:       "checked",
 			OldImages:    map[string]string{"main": p.match},
 			NewImages:    map[string]string{"main": s.normalizeRef(p.newRef)},
-		}
-
-		// Lifecycle hooks for "check" phase (best-effort)
-		if !arcaneupdater.IsArcaneContainer(labels) {
-			pre := arcaneupdater.ExecutePreCheckCommand(ctx, dcli, p.cnt.ID, labels)
-			if pre.Executed {
-				if pre.SkipUpdate {
-					res.Status = "skipped"
-					res.Error = fmt.Sprintf("container requested skip via pre-check hook (exit %d)", arcaneupdater.ExitCodeSkipUpdate)
-					results = append(results, res)
-					continue
-				}
-				if pre.Error != nil {
-					slog.WarnContext(ctx, "restartContainersUsingOldIDs: pre-check hook failed", "container", name, "error", pre.Error.Error())
-				}
-			}
-			post := arcaneupdater.ExecutePostCheckCommand(ctx, dcli, p.cnt.ID, labels)
-			if post.Executed && post.Error != nil {
-				slog.WarnContext(ctx, "restartContainersUsingOldIDs: post-check hook failed", "container", name, "error", post.Error.Error())
-			}
 		}
 
 		if p.newRef == "" {
